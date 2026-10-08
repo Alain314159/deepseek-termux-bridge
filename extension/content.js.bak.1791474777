@@ -27,23 +27,26 @@ const lastCmd = new WeakMap();
 const executed = new Map();
 let mcpSession = null, mcpReady = false, mcpInitPromise = null;
 let lastExecAt = 0, nextId = 2;
-let panel = null, mode = 'off';  // 'off' | 'semi' | 'auto'
+let panel = null, autopilot = false;
 
 function log(...a){ if (DEBUG) console.log('[mdsb]', ...a); }
 function warn(...a){ console.warn('[mdsb]', ...a); }
 
-function loadMode(){
+function loadAP(){
   try {
-    chrome.storage.local.get(['mode']).then(r=>{
-      mode = r.mode || 'off';
-      updateModeButton();
+    chrome.storage.local.get(['autopilot']).then(r=>{
+      autopilot = !!r.autopilot;
       updateFab();
-      if (mode !== 'off') runAuto();
-    }).catch(e=>warn('loadMode', e));
+      const tgl = panel && panel.querySelector('#mdsb-ap-toggle');
+      const ap  = panel && panel.querySelector('#mdsb-ap');
+      if (tgl) tgl.classList.toggle('on', autopilot);
+      if (ap) ap.checked = autopilot;
+      if (autopilot) runAuto();
+    }).catch(e=>warn('loadAP', e));
   } catch(e){ warn('storage', e); }
 }
-function saveMode(){
-  try { chrome.storage.local.set({ mode }); } catch(e){ warn('saveMode', e); }
+function saveAP(){
+  try { chrome.storage.local.set({ autopilot }); } catch(e){ warn('saveAP', e); }
 }
 
 async function mcpHandshake(){
@@ -133,8 +136,7 @@ function ensurePanel(){
       '<span>Termux Bridge</span>' +
       '<div class="actions">' +
         '<span id="mdsb-status" class="status-wait">● esperando</span>' +
-        '<button id="mdsb-mode-btn" class="mode-off" title="Modo: OFF/SEMI/AUTO">OFF</button>' +
-        '<button id="mdsb-reconnect" title="Reconectar MCP">R</button>' +
+        '<label class="toggle" id="mdsb-ap-toggle"><input type="checkbox" id="mdsb-ap"/>Auto</label>' +
         '<button id="mdsb-inject" title="Instrucciones">I</button>' +
         '<button id="mdsb-clear" title="Limpiar ledger">L</button>' +
         '<button id="mdsb-close">x</button>' +
@@ -143,31 +145,21 @@ function ensurePanel(){
     '<div id="mdsb-log"></div>';
   document.body.appendChild(panel);
 
+  const ap = panel.querySelector('#mdsb-ap');
+  const tgl = panel.querySelector('#mdsb-ap-toggle');
+  ap.checked = autopilot;
+  if (autopilot) tgl.classList.add('on');
+  ap.onchange = () => {
+    autopilot = ap.checked;
+    tgl.classList.toggle('on', autopilot);
+    saveAP(); updateFab();
+    if (autopilot) runAuto();
+  };
   panel.querySelector('#mdsb-close').onclick = () => panel.classList.remove('open');
   panel.querySelector('#mdsb-inject').onclick = injectPrompt;
   panel.querySelector('#mdsb-clear').onclick = () => {
     executed.clear();
     showToast('Ledger limpiado');
-  };
-  panel.querySelector('#mdsb-mode-btn').onclick = () => {
-    mode = (mode === 'off') ? 'semi' : (mode === 'semi') ? 'auto' : 'off';
-    saveMode();
-    updateModeButton();
-    updateFab();
-    if (mode !== 'off') runAuto();
-    const label = mode === 'off' ? 'Manual' : mode === 'semi' ? 'Semi (pega sin enviar)' : 'Auto (pega y envía)';
-    showToast('Modo: ' + label);
-  };
-  panel.querySelector('#mdsb-reconnect').onclick = () => {
-    mcpReady = false;
-    setStatus('wait', '● reconectando...');
-    chrome.runtime.sendMessage({ type: 'MCP_RESET' }, (resp) => {
-      if (chrome.runtime.lastError || !resp || !resp.ok){
-        setStatus('bad', '● MCP error');
-      } else {
-        setStatus('ok', '● MCP listo');
-      }
-    });
   };
   console.log('[mdsb] panel creado');
 }
@@ -182,13 +174,6 @@ function logPanel(html){
   log.appendChild(line);
   while (log.children.length > 50) log.removeChild(log.firstChild);
   log.scrollTop = log.scrollHeight;
-}
-
-function updateModeButton(){
-  const b = panel && panel.querySelector('#mdsb-mode-btn');
-  if (!b) return;
-  b.textContent = mode.toUpperCase();
-  b.className = 'mode-' + mode;
 }
 
 function setStatus(kind, text){
@@ -277,9 +262,8 @@ function ensureFab(){
 function updateFab(){
   const f = document.getElementById('mdsb-fab');
   if (!f) return;
-  f.classList.remove('mode-off', 'mode-semi', 'mode-auto');
-  f.classList.add('mode-' + mode);
-  f.textContent = mode === 'auto' ? 'A' : mode === 'semi' ? 'S' : '>';
+  f.classList.toggle('autopilot', autopilot);
+  f.textContent = autopilot ? 'A' : '>';
 }
 
 function findChatTextarea(){
@@ -431,13 +415,11 @@ async function runBlock(btn, cmd, opts){
       const report = formatAgentReport(cmd, r);
       if (!setTextarea(report)){
         showToast('No encontre el input para pegar');
-      } else if (opts.autoSend){
+      } else {
         setTimeout(()=>{
           const s = clickSend();
           if (!s.ok) showToast('No pude enviar: ' + s.reason);
         }, 400);
-      } else {
-        showToast('Semi: reporte pegado, revisalo y envia');
       }
     }
     btn.disabled = false;
@@ -458,8 +440,8 @@ async function runBlock(btn, cmd, opts){
 
 let busy = false;
 async function runAuto(){
-  console.log('[mdsb] runAuto: mode=' + mode + ', busy=' + busy);
-  if (mode === 'off' || busy) return;
+  console.log('[mdsb] runAuto: autopilot=' + autopilot + ', busy=' + busy);
+  if (!autopilot || busy) return;
 
   // Buscar bloques decorados con botón "> Ejecutar" sin ejecutar
   const blocks = [];
@@ -490,16 +472,15 @@ async function runAuto(){
   busy = true;
   try {
     for (const item of blocks){
-      if (mode === 'off') break;
+      if (!autopilot) break;
       if (item.btn.disabled) continue;
-      const autoSend = (mode === 'auto');
-      console.log('[mdsb] auto ejecutando (' + mode + '): ' + item.cmd.slice(0, 60));
-      await runBlock(item.btn, item.cmd, { autoPaste: true, autoSend: autoSend });
+      console.log('[mdsb] auto ejecutando: ' + item.cmd.slice(0, 60));
+      await runBlock(item.btn, item.cmd, { autoPaste: true });
       await new Promise(r => setTimeout(r, COALESCE_MS));
     }
   } finally {
     busy = false;
-    if (mode !== 'off') setTimeout(runAuto, 1500);
+    if (autopilot) setTimeout(runAuto, 1500);
   }
 }
 
@@ -511,7 +492,7 @@ const mo = new MutationObserver(() => {
       const nuevos = findNew();
       console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos');
       nuevos.forEach(item => decorate(item.el, item.cmd));
-      if (mode !== 'off') runAuto();
+      if (autopilot) runAuto();
     } catch(e){ warn('observer', e); }
   }, 250);
 });
@@ -519,7 +500,7 @@ const mo = new MutationObserver(() => {
 function boot(){
   if (!document.body){ setTimeout(boot, 100); return; }
   mo.observe(document.body, { childList:true, subtree:true });
-  loadMode();
+  loadAP();
   ensureFab();
   log('listo');
 }

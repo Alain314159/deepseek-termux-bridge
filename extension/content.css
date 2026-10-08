@@ -100,3 +100,21 @@
 }
 #mdsb-log .log-line b { color: #6ee7a7; }
 #mdsb-log .log-line i { color: #888; }
+
+#mdsb-fab.mode-off  { background: #4f46e5; }
+#mdsb-fab.mode-semi { background: #f59e0b; }
+#mdsb-fab.mode-auto { background: #16a34a; }
+
+#mdsb-mode-btn {
+  background: #2a2a3e !important;
+  color: #e0e0f0 !important;
+  padding: 4px 8px !important;
+  border-radius: 10px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  min-width: 44px;
+  letter-spacing: 0.5px;
+}
+#mdsb-mode-btn.mode-off  { background: #374151 !important; }
+#mdsb-mode-btn.mode-semi { background: #b45309 !important; }
+#mdsb-mode-btn.mode-auto { background: #15803d !important; }

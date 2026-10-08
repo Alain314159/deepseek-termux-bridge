@@ -107,14 +107,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     mcpHandshake().then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
   }
-  if (msg && msg.type === 'MCP_RESET'){
-    mcpReady = false;
-    mcpSession = null;
-    mcpInitPromise = null;
-    console.log('[bg] MCP_RESET: reconectando...');
-    mcpHandshake().then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message }));
-    return true;
-  }
   if (!msg || msg.type !== 'MCP_EXEC') return false;
 
   (async () => {
