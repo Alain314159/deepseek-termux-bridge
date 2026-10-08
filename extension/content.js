@@ -132,6 +132,13 @@ async function execViaMCP(cmd, opts){
   const t0 = Date.now();
 
   return new Promise((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error('timeout ' + Math.round(RUN_TIMEOUT_MS/1000) + 's'));
+    }, RUN_TIMEOUT_MS);
+    const finish = (fn, val) => { if (!done){ done = true; clearTimeout(timer); fn(val); } };
     chrome.runtime.sendMessage({ type: 'MCP_EXEC', cmd: cmd }, (resp) => {
       if (chrome.runtime.lastError){
         reject(new Error(chrome.runtime.lastError.message));
@@ -359,58 +366,64 @@ function setTextarea(txt){
 }
 
 function clickSend(){
-  const ta = findChatTextarea();
-  if (!ta) return { ok:false, reason:'no textarea' };
-  ta.focus();
+  return new Promise((resolve) => {
+    let tries = 0;
+    const MAX_TRIES = 20;
 
-  // 1) submit button en form
-  const form = ta.closest('form');
-  if (form){
-    const s = form.querySelector('button[type="submit"]');
-    if (s && !s.disabled && s.offsetParent !== null){
-      s.click();
-      return { ok:true, via:'form-submit' };
-    }
-  }
+    function attempt(){
+      tries++;
+      const ta = findChatTextarea();
+      if (!ta){ if (tries < MAX_TRIES) return setTimeout(attempt, 300); return resolve({ ok:false, reason:'no textarea' }); }
+      ta.focus();
 
-  // 2) aria-label con send/发送/enviar
-  const cands = document.querySelectorAll('button[aria-label], [role="button"][aria-label], div[role="button"]');
-  for (const b of cands){
-    const label = (b.getAttribute('aria-label') || '').toLowerCase();
-    if (/(send|env|发送|submit)/i.test(label) && !b.disabled && b.offsetParent !== null){
-      b.click();
-      return { ok:true, via:'aria-label' };
-    }
-  }
+      // 1) submit button en form
+      const form = ta.closest('form');
+      if (form){
+        const s = form.querySelector('button[type="submit"]');
+        if (s && !s.disabled && s.offsetParent !== null){
+          s.click();
+          return resolve({ ok:true, via:'form-submit@' + tries });
+        }
+      }
 
-  // 3) buscar botón dentro de los 3 niveles cercanos al textarea
-  let parent = ta.parentElement;
-  for (let depth = 0; depth < 5 && parent; depth++){
-    const btns = parent.querySelectorAll('button, [role="button"]');
-    for (let i = btns.length - 1; i >= 0; i--){
-      const b = btns[i];
-      if (b.disabled) continue;
-      if (b.offsetParent === null) continue;
-      // Evitar botones con iconos obvios que no son enviar
-      const cls = (b.className || '').toString().toLowerCase();
-      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-      if (/(attach|file|adjunt|paperclip|clip|menu|more|emoji|smile)/i.test(cls + ' ' + aria)) continue;
-      // Si el botón tiene un SVG, probablemente sea el de enviar
-      if (b.querySelector('svg') || (b.textContent || '').trim().length === 0){
-        b.click();
-        return { ok:true, via:'nearby-svg@' + depth };
+      // 2) aria-label
+      const cands = document.querySelectorAll('button[aria-label], [role="button"][aria-label]');
+      for (const b of cands){
+        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (/(send|env|发送|submit)/i.test(label) && !b.disabled && b.offsetParent !== null){
+          b.click();
+          return resolve({ ok:true, via:'aria-label@' + tries });
+        }
+      }
+
+      // 3) buscar botón cercano con SVG
+      let parent = ta.parentElement;
+      for (let depth = 0; depth < 5 && parent; depth++){
+        const btns = parent.querySelectorAll('button, [role="button"]');
+        for (let i = btns.length - 1; i >= 0; i--){
+          const b = btns[i];
+          if (b.disabled || b.offsetParent === null) continue;
+          const cls = (b.className || '').toString().toLowerCase();
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          if (/(attach|file|adjunt|paperclip|clip|menu|more|emoji|smile)/i.test(cls + ' ' + aria)) continue;
+          if (b.querySelector('svg') || (b.textContent || '').trim().length === 0){
+            b.click();
+            return resolve({ ok:true, via:'nearby-svg@' + depth + '@' + tries });
+          }
+        }
+        parent = parent.parentElement;
+      }
+
+      // 4) retry
+      if (tries < MAX_TRIES){
+        console.log('[mdsb] send retry ' + tries + '/' + MAX_TRIES);
+        setTimeout(attempt, 400);
+      } else {
+        resolve({ ok:false, reason:'no send button tras ' + MAX_TRIES + ' intentos' });
       }
     }
-    parent = parent.parentElement;
-  }
-
-  // 4) Fallback: simular Enter en el textarea
-  const enterEvent = new KeyboardEvent('keydown', {
-    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-    bubbles: true, cancelable: true
+    attempt();
   });
-  ta.dispatchEvent(enterEvent);
-  return { ok:true, via:'enter-fallback' };
 }
 
 function injectPrompt(){
@@ -453,7 +466,9 @@ function findNew(){
 
     // Si ya lo vimos recientemente (persistido), no decorarlo de nuevo
     const h = hashStr(t);
-    if (seenCmds[h] && (now - seenCmds[h] < SEEN_TTL_MS)){
+    const seen = seenCmds[h] && (now - seenCmds[h] < SEEN_TTL_MS);
+    console.log('[mdsb] findNew: hash=' + h + ' seen=' + !!seen + ' cmd=' + t.slice(0,50));
+    if (seen){
       // Pero asegurarse de que ya tiene botón, si no, decorarlo sin ejecutar
       let hasBtn = false;
       let sib = el.nextElementSibling;
@@ -484,7 +499,7 @@ function decorate(el, cmd){
   const b = document.createElement('button');
   b.className = 'mdsb-run-btn';
   b.textContent = '> Ejecutar';
-  b.onclick = () => runBlock(b, cmd, { autoPaste:false });
+  b.onclick = () => runBlock(b, cmd, { autoPaste: mode !== 'off', autoSend: mode === 'auto', force: true });
   el.parentNode.insertBefore(b, el.nextSibling);
   return b;
 }
@@ -533,11 +548,12 @@ async function runBlock(btn, cmd, opts){
       if (!setTextarea(report)){
         showToast('No encontre el input para pegar');
       } else if (opts.autoSend){
-        setTimeout(()=>{
-          const s = clickSend();
+        // Reintenta enviar durante 10s hasta que DeepSeek termine de escribir
+        setTimeout(async () => {
+          const s = await clickSend();
           if (!s.ok) showToast('No pude enviar: ' + s.reason);
           else log('enviado via ' + s.via);
-        }, 600);
+        }, 800);
       } else {
         showToast('Semi: reporte pegado, revisalo y envia');
       }
@@ -574,9 +590,11 @@ async function runAuto(){
     let sib = el.nextElementSibling;
     while (sib && sib.classList){
       if (sib.classList.contains('mdsb-run-btn') && !sib.classList.contains('mdsb-cancel-btn')){
+        const isAlready = sib.classList.contains('mdsb-already');
         if (!sib.disabled &&
             !sib.classList.contains('done') &&
             !sib.classList.contains('error') &&
+            !isAlready &&
             sib.textContent.indexOf('Ejecutar') !== -1){
           blocks.push({ el: el, cmd: t, btn: sib });
         }
@@ -586,7 +604,8 @@ async function runAuto(){
     }
   });
 
-  console.log('[mdsb] runAuto: ' + blocks.length + ' bloques pendientes');
+  console.log('[mdsb] runAuto: ' + blocks.length + ' bloques ejecutables');
+  blocks.forEach(b => console.log('[mdsb]   → ' + b.cmd.slice(0,60) + ' (btn clases: ' + b.btn.className + ')'));
   if (!blocks.length) return;
 
   busy = true;
@@ -606,20 +625,28 @@ async function runAuto(){
 }
 
 let moTimer = null;
+let streamQuietTimer = null;
 const mo = new MutationObserver(() => {
   clearTimeout(moTimer);
   moTimer = setTimeout(() => {
-    try {
-      const nuevos = findNew();
-      console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos');
-      nuevos.forEach(item => {
-        const b = decorate(item.el, item.cmd);
-        if (item.already) b.disabled = true;  // no ejecutar automaticamente los ya vistos
-      });
-      saveSeen();
-      if (mode !== 'off') runAuto();
-    } catch(e){ warn('observer', e); }
-  }, 250);
+    // Detecta si aún se está escribiendo: si hubo cambios en los últimos 800ms, esperar
+    clearTimeout(streamQuietTimer);
+    streamQuietTimer = setTimeout(() => {
+      try {
+        const nuevos = findNew();
+        console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos (quiet)');
+        nuevos.forEach(item => {
+          const b = decorate(item.el, item.cmd);
+          if (item.already){
+            b.classList.add('mdsb-already');
+            b.title = 'Ya visto (clic para forzar ejecución)';
+          }
+        });
+        saveSeen();
+        if (mode !== 'off') runAuto();
+      } catch(e){ warn('observer', e); }
+    }, 800);
+  }, 200);
 });
 
 function boot(){

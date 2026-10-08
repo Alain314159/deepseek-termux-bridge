@@ -118,3 +118,11 @@
 #mdsb-mode-btn.mode-off  { background: #374151 !important; }
 #mdsb-mode-btn.mode-semi { background: #b45309 !important; }
 #mdsb-mode-btn.mode-auto { background: #15803d !important; }
+
+.mdsb-run-btn.mdsb-already {
+  background: #6b7280 !important;
+  opacity: 0.85;
+}
+.mdsb-run-btn.mdsb-already:hover {
+  background: #4b5563 !important;
+}

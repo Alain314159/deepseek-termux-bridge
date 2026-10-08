@@ -69,20 +69,31 @@ async function mcpCall(tool, args, opts){
   opts = opts || {};
   await mcpHandshake();
   const id = nextId++;
-  const r = await fetch(MCP_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/event-stream',
-      'Mcp-Session-Id': mcpSession
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id,
-      method: 'tools/call',
-      params: { name: tool, arguments: args }
-    }),
-    signal: opts.signal
-  });
+
+  // Timeout propio (60s) por si el servidor no responde
+  const controller = new AbortController();
+  const timeoutMs = opts.timeoutMs || 60000;
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  let r;
+  try {
+    r = await fetch(MCP_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Mcp-Session-Id': mcpSession
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id,
+        method: 'tools/call',
+        params: { name: tool, arguments: args }
+      }),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(t);
+  }
   const text = await r.text();
   const json = parseSSE(text);
   if (!json) throw new Error('respuesta MCP no parseable');
