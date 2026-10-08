@@ -23,7 +23,50 @@ const SYSTEM_PROMPT =
   "4. Nunca inventes resultados. 5. Avanza de a un paso. " +
   "6. Usa flags no interactivos (ej: < /dev/null). 7. Al terminar, resumi sin bloques.";
 
-const lastCmd = new WeakMap();
+// Ledger persistente de bloques ya decorados/ejecutados.
+// Se guarda en chrome.storage.local con clave 'seenCmds'.
+let seenCmds = {};   // { hash: timestamp }
+const SEEN_TTL_MS = 6 * 60 * 60 * 1000;  // 6 horas
+
+function loadSeen(){
+  try {
+    chrome.storage.local.get(['seenCmds']).then(r => {
+      seenCmds = r.seenCmds || {};
+      // Limpiar viejos
+      const now = Date.now();
+      for (const k in seenCmds){
+        if (now - seenCmds[k] > SEEN_TTL_MS) delete seenCmds[k];
+      }
+      console.log('[mdsb] seenCmds cargado: ' + Object.keys(seenCmds).length);
+    }).catch(e => warn('loadSeen', e));
+  } catch(e){ warn('storage', e); }
+}
+
+function saveSeen(){
+  try { chrome.storage.local.set({ seenCmds }); } catch(e){ warn('saveSeen', e); }
+}
+
+function hashStr(s){
+  let h = 0;
+  for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) | 0;
+  return 'h' + Math.abs(h).toString(36) + '_' + s.length;
+}
+
+// Determina si un comando modifica el estado (NO cachear)
+function isMutating(cmd){
+  const c = cmd.trim();
+  // Escribe/modifica FS
+  if (/\b(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|tar|unzip|zip)\b/.test(c)) return true;
+  // Redirecciones
+  if (/[>]/.test(c)) return true;
+  // Git que modifica
+  if (/\bgit\s+(add|commit|push|pull|fetch|checkout|reset|merge|rebase|clone|init|stash|apply|cherry-pick)\b/.test(c)) return true;
+  // npm/pip que instalan
+  if (/\b(npm|yarn|pnpm|pip|pip3|apt|pkg|apk)\s+(install|add|remove|uninstall|upgrade|update)\b/.test(c)) return true;
+  // Editores
+  if (/\b(sed|awk)\s+-i\b/.test(c)) return true;
+  return false;
+}
 const executed = new Map();
 let mcpSession = null, mcpReady = false, mcpInitPromise = null;
 let lastExecAt = 0, nextId = 2;
@@ -71,11 +114,17 @@ async function mcpHandshake(){
 async function execViaMCP(cmd, opts){
   opts = opts || {};
   const key = hashCmd(cmd);
-  const cached = executed.get(key);
-  if (cached && Date.now() - cached.ts < LEDGER_TTL_MS && !opts.force){
-    log('ledger hit', cmd);
-    return Object.assign({}, cached.result, { cached: true });
+  const mutating = isMutating(cmd);
+
+  // Solo cachear comandos NO mutantes
+  if (!mutating){
+    const cached = executed.get(key);
+    if (cached && Date.now() - cached.ts < LEDGER_TTL_MS && !opts.force){
+      log('ledger hit', cmd);
+      return Object.assign({}, cached.result, { cached: true });
+    }
   }
+
   const since = Date.now() - lastExecAt;
   if (lastExecAt && since < COOLDOWN_MS){
     await new Promise(r => setTimeout(r, COOLDOWN_MS - since));
@@ -94,7 +143,10 @@ async function execViaMCP(cmd, opts){
       }
       const r = resp.result;
       r.ms = Date.now() - t0;
-      if (r.exitCode === 0) executed.set(key, { ts: Date.now(), result: r });
+      // Solo guardar en ledger si es read-only y exitoso
+      if (!mutating && r.exitCode === 0){
+        executed.set(key, { ts: Date.now(), result: r });
+      }
       lastExecAt = Date.now();
       resolve(r);
     });
@@ -309,27 +361,56 @@ function setTextarea(txt){
 function clickSend(){
   const ta = findChatTextarea();
   if (!ta) return { ok:false, reason:'no textarea' };
+  ta.focus();
+
+  // 1) submit button en form
   const form = ta.closest('form');
   if (form){
     const s = form.querySelector('button[type="submit"]');
-    if (s && !s.disabled && s.offsetParent !== null){ s.click(); return { ok:true }; }
+    if (s && !s.disabled && s.offsetParent !== null){
+      s.click();
+      return { ok:true, via:'form-submit' };
+    }
   }
-  const cands = document.querySelectorAll('button[aria-label], [role="button"][aria-label]');
+
+  // 2) aria-label con send/发送/enviar
+  const cands = document.querySelectorAll('button[aria-label], [role="button"][aria-label], div[role="button"]');
   for (const b of cands){
     const label = (b.getAttribute('aria-label') || '').toLowerCase();
-    if (/send|enviar|submit/i.test(label) && !b.disabled && b.offsetParent !== null){
-      b.click(); return { ok:true };
+    if (/(send|env|发送|submit)/i.test(label) && !b.disabled && b.offsetParent !== null){
+      b.click();
+      return { ok:true, via:'aria-label' };
     }
   }
-  const cont = form || (ta.parentElement && ta.parentElement.parentElement);
-  if (cont){
-    const btns = cont.querySelectorAll('button');
-    for (let i=btns.length-1;i>=0;i--){
+
+  // 3) buscar botón dentro de los 3 niveles cercanos al textarea
+  let parent = ta.parentElement;
+  for (let depth = 0; depth < 5 && parent; depth++){
+    const btns = parent.querySelectorAll('button, [role="button"]');
+    for (let i = btns.length - 1; i >= 0; i--){
       const b = btns[i];
-      if (!b.disabled && b.offsetParent !== null){ b.click(); return { ok:true }; }
+      if (b.disabled) continue;
+      if (b.offsetParent === null) continue;
+      // Evitar botones con iconos obvios que no son enviar
+      const cls = (b.className || '').toString().toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      if (/(attach|file|adjunt|paperclip|clip|menu|more|emoji|smile)/i.test(cls + ' ' + aria)) continue;
+      // Si el botón tiene un SVG, probablemente sea el de enviar
+      if (b.querySelector('svg') || (b.textContent || '').trim().length === 0){
+        b.click();
+        return { ok:true, via:'nearby-svg@' + depth };
+      }
     }
+    parent = parent.parentElement;
   }
-  return { ok:false, reason:'no send button' };
+
+  // 4) Fallback: simular Enter en el textarea
+  const enterEvent = new KeyboardEvent('keydown', {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    bubbles: true, cancelable: true
+  });
+  ta.dispatchEvent(enterEvent);
+  return { ok:true, via:'enter-fallback' };
 }
 
 function injectPrompt(){
@@ -363,14 +444,34 @@ function isCmd(t){
 
 function findNew(){
   const r = [];
+  const now = Date.now();
   document.querySelectorAll('pre').forEach(pre => {
     if (pre.closest('#mdsb-panel')) return;
     const el = pre.querySelector('code') || pre;
     const t = (el.textContent || '').trim();
     if (!t || !isCmd(t)) return;
-    if (lastCmd.get(el) === t) return;
-    lastCmd.set(el, t);
-    r.push({ el, cmd: t });
+
+    // Si ya lo vimos recientemente (persistido), no decorarlo de nuevo
+    const h = hashStr(t);
+    if (seenCmds[h] && (now - seenCmds[h] < SEEN_TTL_MS)){
+      // Pero asegurarse de que ya tiene botón, si no, decorarlo sin ejecutar
+      let hasBtn = false;
+      let sib = el.nextElementSibling;
+      while (sib && sib.classList){
+        if (sib.classList.contains('mdsb-run-btn') && !sib.classList.contains('mdsb-cancel-btn')){
+          hasBtn = true;
+          break;
+        }
+        sib = sib.nextElementSibling;
+      }
+      if (!hasBtn){
+        r.push({ el, cmd: t, already: true });
+      }
+      return;
+    }
+
+    seenCmds[h] = now;
+    r.push({ el, cmd: t, already: false });
   });
   return r;
 }
@@ -435,7 +536,8 @@ async function runBlock(btn, cmd, opts){
         setTimeout(()=>{
           const s = clickSend();
           if (!s.ok) showToast('No pude enviar: ' + s.reason);
-        }, 400);
+          else log('enviado via ' + s.via);
+        }, 600);
       } else {
         showToast('Semi: reporte pegado, revisalo y envia');
       }
@@ -510,7 +612,11 @@ const mo = new MutationObserver(() => {
     try {
       const nuevos = findNew();
       console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos');
-      nuevos.forEach(item => decorate(item.el, item.cmd));
+      nuevos.forEach(item => {
+        const b = decorate(item.el, item.cmd);
+        if (item.already) b.disabled = true;  // no ejecutar automaticamente los ya vistos
+      });
+      saveSeen();
       if (mode !== 'off') runAuto();
     } catch(e){ warn('observer', e); }
   }, 250);
@@ -519,6 +625,7 @@ const mo = new MutationObserver(() => {
 function boot(){
   if (!document.body){ setTimeout(boot, 100); return; }
   mo.observe(document.body, { childList:true, subtree:true });
+  loadSeen();
   loadMode();
   ensureFab();
   log('listo');
