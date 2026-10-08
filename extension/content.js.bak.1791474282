@@ -440,47 +440,20 @@ async function runBlock(btn, cmd, opts){
 
 let busy = false;
 async function runAuto(){
-  console.log('[mdsb] runAuto: autopilot=' + autopilot + ', busy=' + busy);
   if (!autopilot || busy) return;
-
-  // Buscar bloques decorados con botón "> Ejecutar" sin ejecutar
-  const blocks = [];
-  document.querySelectorAll('pre').forEach(pre => {
-    if (pre.closest('#mdsb-panel')) return;
-    const el = pre.querySelector('code') || pre;
-    const t = (el.textContent || '').trim();
-    if (!t || !isCmd(t)) return;
-
-    let sib = el.nextElementSibling;
-    while (sib && sib.classList){
-      if (sib.classList.contains('mdsb-run-btn') && !sib.classList.contains('mdsb-cancel-btn')){
-        if (!sib.disabled &&
-            !sib.classList.contains('done') &&
-            !sib.classList.contains('error') &&
-            sib.textContent.indexOf('Ejecutar') !== -1){
-          blocks.push({ el: el, cmd: t, btn: sib });
-        }
-        break;
-      }
-      sib = sib.nextElementSibling;
-    }
-  });
-
-  console.log('[mdsb] runAuto: ' + blocks.length + ' bloques pendientes');
-  if (!blocks.length) return;
-
+  const bs = findNew();
+  if (!bs.length) return;
   busy = true;
   try {
-    for (const item of blocks){
+    for (const item of bs){
       if (!autopilot) break;
-      if (item.btn.disabled) continue;
-      console.log('[mdsb] auto ejecutando: ' + item.cmd.slice(0, 60));
-      await runBlock(item.btn, item.cmd, { autoPaste: true });
+      const b = decorate(item.el, item.cmd);
+      if (b) await runBlock(b, item.cmd, { autoPaste:true });
       await new Promise(r => setTimeout(r, COALESCE_MS));
     }
   } finally {
     busy = false;
-    if (autopilot) setTimeout(runAuto, 1500);
+    if (autopilot && findNew().length) setTimeout(runAuto, 300);
   }
 }
 
@@ -489,9 +462,7 @@ const mo = new MutationObserver(() => {
   clearTimeout(moTimer);
   moTimer = setTimeout(() => {
     try {
-      const nuevos = findNew();
-      console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos');
-      nuevos.forEach(item => decorate(item.el, item.cmd));
+      findNew().forEach(item => decorate(item.el, item.cmd));
       if (autopilot) runAuto();
     } catch(e){ warn('observer', e); }
   }, 250);

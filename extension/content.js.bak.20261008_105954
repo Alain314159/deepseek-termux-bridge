@@ -50,25 +50,81 @@ function saveAP(){
 }
 
 async function mcpHandshake(){
-  if (mcpReady) return true;
+  if (mcpReady && mcpSession) return true;
+  if (mcpInitPromise) return mcpInitPromise;
   setStatus('wait', '● conectando...');
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'MCP_PING' }, (resp) => {
-      if (chrome.runtime.lastError){
-        setStatus('bad', '● bg error');
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!resp || !resp.ok){
-        setStatus('bad', '● MCP error');
-        reject(new Error((resp && resp.error) || 'handshake falló'));
-        return;
-      }
-      mcpReady = true;
-      setStatus('ok', '● MCP listo');
-      resolve(true);
+  mcpInitPromise = (async () => {
+    const r = await fetch(MCP_URL, {
+      method:'POST',
+      headers: { 'Content-Type':'application/json', 'Accept':'application/json, text/event-stream' },
+      body: JSON.stringify({
+        jsonrpc:'2.0', id:1, method:'initialize',
+        params:{ protocolVersion:'2025-06-18', capabilities:{},
+                 clientInfo:{ name:'deepseek-termux-bridge', version:'1.0' } }
+      })
     });
+    const sid = r.headers.get('Mcp-Session-Id');
+    if (!sid) throw new Error('sin Mcp-Session-Id');
+    mcpSession = sid;
+    await fetch(MCP_URL, {
+      method:'POST',
+      headers: { 'Content-Type':'application/json', 'Accept':'application/json, text/event-stream',
+                 'Mcp-Session-Id': mcpSession },
+      body: JSON.stringify({ jsonrpc:'2.0', method:'notifications/initialized' })
+    });
+    mcpReady = true;
+    setStatus('ok', '● MCP listo');
+    log('MCP OK', sid);
+    return true;
+  })().catch(e => {
+    mcpInitPromise = null; mcpReady = false; mcpSession = null;
+    setStatus('bad', '● MCP error');
+    warn('MCP handshake', e);
+    throw e;
   });
+  return mcpInitPromise;
+}
+
+function parseSSE(text){
+  for (const line of text.split('\n')){
+    const t = line.trim();
+    if (t.startsWith('data:')){
+      try { return JSON.parse(t.slice(5).trim()); } catch (e) {}
+    }
+  }
+  try { return JSON.parse(text); } catch (e) {}
+  return null;
+}
+
+async function mcpCall(tool, args, opts){
+  opts = opts || {};
+  await mcpHandshake();
+  const id = nextId++;
+  const r = await fetch(MCP_URL, {
+    method:'POST',
+    headers: { 'Content-Type':'application/json', 'Accept':'application/json, text/event-stream',
+               'Mcp-Session-Id': mcpSession },
+    body: JSON.stringify({ jsonrpc:'2.0', id, method:'tools/call',
+                           params:{ name: tool, arguments: args } }),
+    signal: opts.signal
+  });
+  const text = await r.text();
+  const json = parseSSE(text);
+  if (!json) throw new Error('respuesta MCP no parseable');
+  if (json.error) throw new Error(json.error.message || 'MCP error');
+  return json.result;
+}
+
+function hashCmd(cmd){
+  let h = 0;
+  for (let i=0;i<cmd.length;i++) h = (h*31 + cmd.charCodeAt(i)) | 0;
+  return 'c' + Math.abs(h).toString(36) + '_' + cmd.length;
+}
+
+function normalizeOut(text){
+  if (!text) return '';
+  if (text.length <= MAX_OUT_LEN) return text;
+  return text.slice(0, MAX_OUT_LEN) + '\n[...truncado ' + (text.length - MAX_OUT_LEN) + ' chars]';
 }
 
 async function execViaMCP(cmd, opts){
@@ -84,36 +140,27 @@ async function execViaMCP(cmd, opts){
     await new Promise(r => setTimeout(r, COOLDOWN_MS - since));
   }
   const t0 = Date.now();
-
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'MCP_EXEC', cmd: cmd }, (resp) => {
-      if (chrome.runtime.lastError){
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!resp || !resp.ok){
-        reject(new Error((resp && resp.error) || 'error en background'));
-        return;
-      }
-      const r = resp.result;
-      r.ms = Date.now() - t0;
-      if (r.exitCode === 0) executed.set(key, { ts: Date.now(), result: r });
-      lastExecAt = Date.now();
-      resolve(r);
-    });
-  });
-}
-
-function hashCmd(cmd){
-  let h = 0;
-  for (let i=0;i<cmd.length;i++) h = (h*31 + cmd.charCodeAt(i)) | 0;
-  return 'c' + Math.abs(h).toString(36) + '_' + cmd.length;
-}
-
-function normalizeOut(text){
-  if (!text) return '';
-  if (text.length <= MAX_OUT_LEN) return text;
-  return text.slice(0, MAX_OUT_LEN) + '\n[...truncado ' + (text.length - MAX_OUT_LEN) + ' chars]';
+  const controller = new AbortController();
+  const to = setTimeout(()=>controller.abort(), RUN_TIMEOUT_MS);
+  try {
+    const result = await mcpCall('run', { cmd }, { signal: controller.signal });
+    clearTimeout(to);
+    const content = (result.content || []).map(c => c.text || '').join('');
+    const isError = !!result.isError;
+    const out = {
+      stdout: isError ? '' : content,
+      stderr: isError ? content : '',
+      exitCode: isError ? 1 : 0,
+      ms: Date.now() - t0
+    };
+    if (!isError) executed.set(key, { ts: Date.now(), result: out });
+    lastExecAt = Date.now();
+    return out;
+  } catch(e){
+    clearTimeout(to);
+    lastExecAt = Date.now();
+    throw e;
+  }
 }
 
 function formatAgentReport(cmd, res){
@@ -440,47 +487,20 @@ async function runBlock(btn, cmd, opts){
 
 let busy = false;
 async function runAuto(){
-  console.log('[mdsb] runAuto: autopilot=' + autopilot + ', busy=' + busy);
   if (!autopilot || busy) return;
-
-  // Buscar bloques decorados con botón "> Ejecutar" sin ejecutar
-  const blocks = [];
-  document.querySelectorAll('pre').forEach(pre => {
-    if (pre.closest('#mdsb-panel')) return;
-    const el = pre.querySelector('code') || pre;
-    const t = (el.textContent || '').trim();
-    if (!t || !isCmd(t)) return;
-
-    let sib = el.nextElementSibling;
-    while (sib && sib.classList){
-      if (sib.classList.contains('mdsb-run-btn') && !sib.classList.contains('mdsb-cancel-btn')){
-        if (!sib.disabled &&
-            !sib.classList.contains('done') &&
-            !sib.classList.contains('error') &&
-            sib.textContent.indexOf('Ejecutar') !== -1){
-          blocks.push({ el: el, cmd: t, btn: sib });
-        }
-        break;
-      }
-      sib = sib.nextElementSibling;
-    }
-  });
-
-  console.log('[mdsb] runAuto: ' + blocks.length + ' bloques pendientes');
-  if (!blocks.length) return;
-
+  const bs = findNew();
+  if (!bs.length) return;
   busy = true;
   try {
-    for (const item of blocks){
+    for (const item of bs){
       if (!autopilot) break;
-      if (item.btn.disabled) continue;
-      console.log('[mdsb] auto ejecutando: ' + item.cmd.slice(0, 60));
-      await runBlock(item.btn, item.cmd, { autoPaste: true });
+      const b = decorate(item.el, item.cmd);
+      if (b) await runBlock(b, item.cmd, { autoPaste:true });
       await new Promise(r => setTimeout(r, COALESCE_MS));
     }
   } finally {
     busy = false;
-    if (autopilot) setTimeout(runAuto, 1500);
+    if (autopilot && findNew().length) setTimeout(runAuto, 300);
   }
 }
 
@@ -489,9 +509,7 @@ const mo = new MutationObserver(() => {
   clearTimeout(moTimer);
   moTimer = setTimeout(() => {
     try {
-      const nuevos = findNew();
-      console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos');
-      nuevos.forEach(item => decorate(item.el, item.cmd));
+      findNew().forEach(item => decorate(item.el, item.cmd));
       if (autopilot) runAuto();
     } catch(e){ warn('observer', e); }
   }, 250);
