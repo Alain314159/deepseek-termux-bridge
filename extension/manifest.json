@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek Termux Bridge",
+  "version": "1.0.0",
+  "description": "Puente entre chat.deepseek.com y Termux via MCP nativo (127.0.0.1:8081)",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "http://127.0.0.1:8081/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "DeepSeek Termux Bridge"
+  }
+}

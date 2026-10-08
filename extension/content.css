@@ -1,0 +1,85 @@
+#mdsb-fab {
+  position: fixed;
+  bottom: 110px;
+  right: 16px;
+  z-index: 2147483647;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: grab;
+  box-shadow: 0 4px 16px rgba(79,70,229,.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  user-select: none;
+  transition: background .15s;
+}
+#mdsb-fab.dragging { cursor: grabbing; background: #6366f1; }
+#mdsb-fab.autopilot { background: #16a34a; }
+
+#mdsb-panel {
+  position: fixed;
+  bottom: 170px;
+  right: 16px;
+  z-index: 2147483646;
+  width: min(420px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 200px));
+  background: #0b0b14;
+  color: #e0e0f0;
+  border: 1px solid #2a2a3e;
+  border-radius: 12px;
+  overflow: hidden;
+  display: none;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6);
+  font-family: system-ui, sans-serif;
+}
+#mdsb-panel.open { display: flex; flex-direction: column; }
+#mdsb-panel iframe { flex: 1; width: 100%; border: none; background: #0b0b14; }
+#mdsb-panel .header {
+  padding: 8px 12px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #2a2a3e;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 8px;
+}
+#mdsb-panel .header .actions { display: flex; gap: 6px; align-items: center; }
+#mdsb-panel .header button {
+  background: none; border: none; color: #e0e0f0; cursor: pointer;
+  font-size: 16px; padding: 4px 6px; border-radius: 4px;
+}
+#mdsb-panel .header .toggle {
+  display: flex; align-items: center; gap: 4px; font-size: 11px;
+  background: #2a2a3e; padding: 4px 8px; border-radius: 12px; cursor: pointer;
+}
+#mdsb-panel .header .toggle.on { background: #16a34a; }
+#mdsb-panel .header .toggle input { display: none; }
+
+.mdsb-run-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 6px 0; padding: 6px 12px;
+  background: #4f46e5; color: #fff; border: none;
+  border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.mdsb-run-btn.done { background: #16a34a; }
+.mdsb-run-btn.error { background: #dc2626; }
+.mdsb-run-btn:disabled { opacity: .6; cursor: wait; }
+
+#mdsb-toast { transition: opacity .2s; }
+
+#mdsb-panel .header .status-wait { color: #fbbf24; font-size: 11px; }
+#mdsb-panel .header .status-ok   { color: #6ee7a7; font-size: 11px; }
+#mdsb-panel .header .status-err  { color: #f87171; font-size: 11px; }
+
+.mdsb-run-btn.mdsb-cancel-btn {
+  background: #dc2626; margin-left: 4px; padding: 6px 10px;
+}
