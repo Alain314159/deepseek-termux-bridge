@@ -448,11 +448,39 @@ function showToast(msg, ms){
   el._t = setTimeout(()=>{ el.style.display='none'; }, ms);
 }
 
-function isCmd(t){
-  t = t.trim();
-  if (!t || t.length > 4000) return false;
-  if (/^(?:const|let|var|function|import|export|class|return|<\?|\/[a-z])/.test(t)) return false;
-  return /^(?:git|npm|node|npx|ls|cd|cat|echo|mkdir|rm|cp|mv|curl|wget|grep|find|chmod|pwd|touch|head|tail|sed|awk|python|python3|pip|bash|sh|yarn|pnpm|tar|zip|unzip|which|whoami|env|export|sudo|apt|apt-get|docker|make|gcc|g\+\+|go|cargo|rustc|termux-\w+)\b|^\.\/|^\/[\w.\/-]+/.test(t);
+function isCmd(codeEl, txt){
+  txt = (txt || '').trim();
+  if (!txt || txt.length > 8000) return false;
+
+  // 1) Si el <code> tiene language-sh/bash/shell → aceptar siempre
+  const cls = ((codeEl && codeEl.className) || '').toString().toLowerCase();
+  if (/language-(sh|bash|shell|zsh|console|terminal|cmd)/.test(cls)) return true;
+
+  // 2) Si tiene language de OTRO lenguaje → rechazar
+  if (/language-(js|javascript|ts|typescript|jsx|tsx|py|python|java|c|cpp|csharp|cs|html|css|scss|json|xml|yaml|yml|md|markdown|sql|go|rust|php|rb|ruby|swift|kotlin|dart|lua|perl|r|matlab|vue|svelte)/.test(cls)) return false;
+
+  // 3) Quitar prompt $ inicial y comentarios, quedarnos con la primera línea real
+  const lines = txt.split('\n');
+  let first = '';
+  for (const l of lines){
+    const t = l.trim();
+    if (!t) continue;
+    if (t.startsWith('#')) continue;        // comentario
+    first = t.replace(/^\$\s+/, '');       // prompt $ cmd
+    break;
+  }
+  if (!first) return false;
+
+  // 4) Rechazar si parece JS/HTML/JSON
+  if (/^(?:const|let|var|function|import|export|class|return|new |<\?|<!|[{[]|\/[a-z])/.test(first)) return false;
+
+  // 5) Aceptar si tiene estructura shell (&&, ||, |, ;, >, <, $(), backticks)
+  if (/(?:&&|\|\||\||;|>|<|\$\(|`)/.test(txt)) return true;
+
+  // 6) Lista ampliada de comandos conocidos (incluye control, sistema, dev)
+  const known = /^(?:git|npm|node|npx|pnpm|yarn|bun|ls|cd|cat|echo|printf|mkdir|rmdir|rm|cp|mv|ln|touch|chmod|chown|chgrp|pwd|head|tail|sed|awk|grep|egrep|fgrep|find|locate|which|whereis|type|whoami|id|groups|env|export|unset|set|source|alias|unalias|history|help|man|info|sudo|su|apt|apt-get|pkg|dpkg|pip|pip3|pipx|curl|wget|tar|zip|unzip|gzip|gunzip|xz|bzip2|ssh|scp|rsync|git|docker|podman|make|cmake|gcc|g\+\+|clang|go|cargo|rustc|java|javac|python|python3|node|ruby|perl|php|lua|sqlite3|psql|mysql|redis-cli|jq|yq|base64|md5sum|sha1sum|sha256sum|openssl|gpg|ssh-keygen|diff|patch|comm|sort|uniq|wc|tee|xargs|cut|tr|rev|paste|split|cksum|stat|file|readlink|realpath|dirname|basename|date|cal|uptime|time|timedatectl|hostname|uname|df|du|free|top|htop|ps|pgrep|pkill|kill|killall|nohup|sleep|watch|at|crontab|service|systemctl|journalctl|xargs|for|while|until|if|case|elif|else|fi|done|do|then|function|termux-\w+)\b/.test(first);
+
+  return known;
 }
 
 function findNew(){
@@ -462,7 +490,7 @@ function findNew(){
     if (pre.closest('#mdsb-panel')) return;
     const el = pre.querySelector('code') || pre;
     const t = (el.textContent || '').trim();
-    if (!t || !isCmd(t)) return;
+    if (!t || !isCmd(el, t)) return;
 
     // Si ya lo vimos recientemente (persistido), no decorarlo de nuevo
     const h = hashStr(t);
@@ -583,9 +611,10 @@ async function runAuto(){
   const blocks = [];
   document.querySelectorAll('pre').forEach(pre => {
     if (pre.closest('#mdsb-panel')) return;
-    const el = pre.querySelector('code') || pre;
+    const codeEl = pre.querySelector('code');
+    const el = codeEl || pre;
     const t = (el.textContent || '').trim();
-    if (!t || !isCmd(t)) return;
+    if (!t || !isCmd(codeEl, t)) return;
 
     let sib = el.nextElementSibling;
     while (sib && sib.classList){
