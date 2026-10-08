@@ -24,6 +24,7 @@ Puente entre chat.deepseek.com (web gratis, sin API) y Termux en Android.
 
 O manual:
 
+    export TERMUX_NATIVE_MCP_ORIGIN="https://chat.deepseek.com"
     nohup termux-native-mcp > ~/native-mcp.log 2>&1 &
 
 ## Cargar extension en Titanium
