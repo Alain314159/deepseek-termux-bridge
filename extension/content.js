@@ -29,8 +29,8 @@ let seenCmds = {};   // { hash: timestamp }
 const SEEN_TTL_MS = 6 * 60 * 60 * 1000;  // 6 horas
 
 function loadSeen(){
-  try {
-    chrome.storage.local.get(['seenCmds']).then(r => {
+  safeStorageGet(['seenCmds'], (r) => {
+    if (!r) return;
       seenCmds = r.seenCmds || {};
       // Limpiar viejos
       const now = Date.now();
@@ -38,13 +38,10 @@ function loadSeen(){
         if (now - seenCmds[k] > SEEN_TTL_MS) delete seenCmds[k];
       }
       console.log('[mdsb] seenCmds cargado: ' + Object.keys(seenCmds).length);
-    }).catch(e => warn('loadSeen', e));
-  } catch(e){ warn('storage', e); }
+  });
 }
 
-function saveSeen(){
-  try { chrome.storage.local.set({ seenCmds }); } catch(e){ warn('saveSeen', e); }
-}
+function saveSeen(){ safeStorageSet({ seenCmds }); }
 
 function hashStr(s){
   let h = 0;
@@ -72,28 +69,63 @@ let mcpSession = null, mcpReady = false, mcpInitPromise = null;
 let lastExecAt = 0, nextId = 2;
 let panel = null, mode = 'off';  // 'off' | 'semi' | 'auto'
 
+
+// Chequea si el contexto de la extensión sigue vivo (no fue invalidado por reload)
+function isExtAlive(){
+  try { return !!(chrome && chrome.runtime && chrome.runtime.id); }
+  catch(e){ return false; }
+}
+
+// Wrapper seguro para chrome.storage.local.set
+function safeStorageSet(obj){
+  if (!isExtAlive()) { console.log('[mdsb] storage skip: ext invalidada'); return; }
+  try { chrome.storage.local.set(obj); } catch(e){ /* silencio */ }
+}
+
+// Wrapper seguro para chrome.storage.local.get
+function safeStorageGet(keys, cb){
+  if (!isExtAlive()) { console.log('[mdsb] storage get skip: ext invalidada'); return; }
+  try { chrome.storage.local.get(keys).then(cb).catch(()=>{}); } catch(e){ /* silencio */ }
+}
+
+// Wrapper seguro para sendMessage
+function safeSendMessage(msg, cb){
+  if (!isExtAlive()){
+    if (cb) cb({ ok: false, error: 'ext context invalidated' });
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage(msg, (resp) => {
+      if (chrome.runtime.lastError){
+        if (cb) cb({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      if (cb) cb(resp);
+    });
+  } catch(e){
+    if (cb) cb({ ok: false, error: e.message });
+  }
+}
+
 function log(...a){ if (DEBUG) console.log('[mdsb]', ...a); }
 function warn(...a){ console.warn('[mdsb]', ...a); }
 
 function loadMode(){
-  try {
-    chrome.storage.local.get(['mode']).then(r=>{
+  safeStorageGet(['mode'], (r) => {
+    if (!r) return;
       mode = r.mode || 'off';
       updateModeButton();
       updateFab();
       if (mode !== 'off') runAuto();
-    }).catch(e=>warn('loadMode', e));
-  } catch(e){ warn('storage', e); }
+  });
 }
-function saveMode(){
-  try { chrome.storage.local.set({ mode }); } catch(e){ warn('saveMode', e); }
-}
+function saveMode(){ safeStorageSet({ mode }); }
 
 async function mcpHandshake(){
   if (mcpReady) return true;
   setStatus('wait', '● conectando...');
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'MCP_PING' }, (resp) => {
+    safeSendMessage({ type: 'MCP_PING' }, (resp) => {
       if (chrome.runtime.lastError){
         setStatus('bad', '● bg error');
         reject(new Error(chrome.runtime.lastError.message));
@@ -139,7 +171,7 @@ async function execViaMCP(cmd, opts){
       reject(new Error('timeout ' + Math.round(RUN_TIMEOUT_MS/1000) + 's'));
     }, RUN_TIMEOUT_MS);
     const finish = (fn, val) => { if (!done){ done = true; clearTimeout(timer); fn(val); } };
-    chrome.runtime.sendMessage({ type: 'MCP_EXEC', cmd: cmd }, (resp) => {
+    safeSendMessage({ type: 'MCP_EXEC', cmd: cmd }, (resp) => {
       if (chrome.runtime.lastError){
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -225,7 +257,7 @@ function ensurePanel(){
   panel.querySelector('#mdsb-reconnect').onclick = () => {
     mcpReady = false;
     setStatus('wait', '● reconectando...');
-    chrome.runtime.sendMessage({ type: 'MCP_RESET' }, (resp) => {
+    safeSendMessage({ type: 'MCP_RESET' }, (resp) => {
       if (chrome.runtime.lastError || !resp || !resp.ok){
         setStatus('bad', '● MCP error');
       } else {
@@ -280,14 +312,13 @@ function ensureFab(){
 
   // Cargar posición guardada
   try {
-    chrome.storage.local.get(['fabPos']).then(r=>{
+    safeStorageGet(['fabPos'], (r) => {
       if (r && r.fabPos){
         f.style.left = r.fabPos.left + 'px';
         f.style.top  = r.fabPos.top  + 'px';
         f.style.right = 'auto'; f.style.bottom = 'auto';
       }
     });
-  } catch(e){ warn('fabPos', e); }
 
   // Toggle del panel: simple y confiable
   f.addEventListener('click', function(ev){
@@ -330,7 +361,7 @@ function ensureFab(){
   f.addEventListener('touchend', function(e){
     if (!dragging) return;
     const r = f.getBoundingClientRect();
-    try { chrome.storage.local.set({ fabPos:{ left:r.left, top:r.top } }); } catch(e){}
+    safeStorageSet({ fabPos:{ left:r.left, top:r.top } });
     // Bloquear el click posterior solo si hubo drag
     e.preventDefault();
   });
