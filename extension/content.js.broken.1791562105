@@ -311,6 +311,7 @@ function ensureFab(){
   document.body.appendChild(f);
 
   // Cargar posición guardada
+  try {
     safeStorageGet(['fabPos'], (r) => {
       if (r && r.fabPos){
         f.style.left = r.fabPos.left + 'px';
@@ -526,275 +527,50 @@ function isCmd(codeEl, txt){
   txt = (txt || '').trim();
   if (!txt || txt.length > 8000) return false;
 
-  if (/\[AGENT REPORT\]/.test(txt)) return false;
-  if (/^\s*cmd_sha256\s*:/m.test(txt)) return false;
-  if (/^\s*status\s*:\s*(OK|EXIT_)/m.test(txt)) return false;
-  if (/^\s*exit\s*:\s*\d+/m.test(txt)) return false;
-  if (/^\s*ms\s*:\s*\d+/m.test(txt)) return false;
-  const clsCheck = ((codeEl && codeEl.className) || '').toString().toLowerCase();
-  if (/language-(plaintext|text|markdown|md|log|output)\b/.test(clsCheck)) return false;
-
-  // NUEVO: rechazar cualquier cosa que parezca un reporte o prosa técnica
+  // === REGLAS DE RECHAZO (prosa y reportes) ===
   if (/\[AGENT REPORT\]/.test(txt)) return false;
   if (/^\s*cmd_sha256\s*:/m.test(txt)) return false;
   if (/^\s*cmd\s*:\s/m.test(txt)) return false;
   if (/^\s*status\s*:\s*(OK|EXIT_)/m.test(txt)) return false;
   if (/^\s*exit\s*:\s*\d+/m.test(txt)) return false;
+  if (/^\s*ms\s*:\s*\d+/m.test(txt)) return false;
 
-  // 1) Si el <code> tiene language-sh/bash/shell → aceptar siempre
+  // === REGLAS DE RECHAZO (lenguajes de programación explícitos) ===
   const cls = ((codeEl && codeEl.className) || '').toString().toLowerCase();
-  if (/language-(sh|bash|shell|zsh|console|terminal|cmd)/.test(cls)) return true;
+  if (/language-(js|javascript|jsx|ts|typescript|tsx|py|python|java|c|cpp|csharp|cs|html|htm|css|scss|sass|less|json|xml|yaml|yml|md|markdown|sql|go|rust|php|rb|ruby|swift|kotlin|dart|lua|perl|r|matlab|vue|svelte|plaintext|text|log|output)\b/.test(cls)) {
+    return false;
+  }
 
-  // 2) Si tiene language de OTRO lenguaje → rechazar
-  if (/language-(js|javascript|ts|typescript|jsx|tsx|py|python|java|c|cpp|csharp|cs|html|css|scss|json|xml|yaml|yml|md|markdown|sql|go|rust|php|rb|ruby|swift|kotlin|dart|lua|perl|r|matlab|vue|svelte)/.test(cls)) return false;
+  // === ACEPTACIÓN INMEDIATA si tiene language-sh/bash/shell/zsh ===
+  if (/language-(sh|bash|shell|zsh|console|terminal|cmd)\b/.test(cls)) return true;
 
-  // 3) Quitar prompt $ inicial y comentarios, quedarnos con la primera línea real
+  // === RECHAZO de prosa técnica / pseudocódigo por primera línea ===
   const lines = txt.split('\n');
   let first = '';
   for (const l of lines){
     const t = l.trim();
     if (!t) continue;
-    if (t.startsWith('#')) continue;        // comentario
-    first = t.replace(/^\$\s+/, '');       // prompt $ cmd
+    if (t.startsWith('#')) continue;
+    first = t.replace(/^\$\s+/, '');
     break;
   }
   if (!first) return false;
 
-  // 4) Rechazar si parece JS/HTML/JSON
-  if (/^(?:const|let|var|function|import|export|class|return|new |<\?|<!|[{[]|\/[a-z])/.test(first)) return false;
+  // Rechazar si empieza con palabra clave de otro lenguaje
+  if (/^(?:if|for|while|def|class|import|from|return|const|let|var|function|async|await|try|catch|switch|case|break|continue|new |this\.|public |private |protected |static |void |int |String |boolean |elif|else|fi|done|then|do\b)/.test(first)) {
+    return false;
+  }
 
-  // 5) Aceptar si tiene estructura shell (&&, ||, |, ;, >, <, $(), backticks)
+  // Rechazar sintaxis claramente no-shell
+  if (/^(?:<\?|<!|<[a-z]+[\s>]|\{|\[)/.test(first)) return false;
+  if (/;\s*$/.test(first) && /^(?:const|let|var|return|import|export|function)/.test(first)) return false;
+  if (/=>/.test(txt)) return false;
+
+  // === ACEPTACIÓN por estructura shell ===
   if (/(?:&&|\|\||\||;|>|<|\$\(|`)/.test(txt)) return true;
 
-  // 5b) VAR=val al inicio (ej: FOO=bar echo $FOO)
-  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return true;
-
-  // 6) Lista ampliada de comandos conocidos (incluye control, sistema, dev)
-  const known = /^(?:git|npm|node|npx|pnpm|yarn|bun|ls|cd|cat|echo|printf|mkdir|rmdir|rm|cp|mv|ln|touch|chmod|chown|chgrp|pwd|head|tail|sed|awk|grep|egrep|fgrep|find|locate|which|whereis|type|whoami|id|groups|env|export|unset|set|source|alias|unalias|history|help|man|info|sudo|su|apt|apt-get|pkg|dpkg|pip|pip3|pipx|curl|wget|tar|zip|unzip|gzip|gunzip|xz|bzip2|ssh|scp|rsync|git|docker|podman|make|cmake|gcc|g\+\+|clang|go|cargo|rustc|java|javac|python|python3|node|ruby|perl|php|lua|sqlite3|psql|mysql|redis-cli|jq|yq|base64|md5sum|sha1sum|sha256sum|openssl|gpg|ssh-keygen|diff|patch|comm|sort|uniq|wc|tee|xargs|cut|tr|rev|paste|split|cksum|stat|file|readlink|realpath|dirname|basename|date|cal|uptime|time|timedatectl|hostname|uname|df|du|free|top|htop|ps|pgrep|pkill|kill|killall|nohup|sleep|watch|at|crontab|service|systemctl|journalctl|xargs|for|while|until|if|case|elif|else|fi|done|do|then|function|termux-\w+)\b/.test(first);
+  // === ACEPTACIÓN por lista blanca de comandos ===
+  const known = /^(?:git|npm|node|npx|pnpm|yarn|bun|ls|cd|cat|echo|printf|mkdir|rmdir|rm|cp|mv|ln|touch|chmod|chown|chgrp|pwd|head|tail|sed|awk|grep|egrep|fgrep|find|locate|which|whereis|type|whoami|id|groups|env|export|unset|set|source|alias|unalias|history|help|man|info|sudo|su|apt|apt-get|pkg|dpkg|pip|pip3|pipx|curl|wget|tar|zip|unzip|gzip|gunzip|xz|bzip2|ssh|scp|rsync|docker|podman|make|cmake|gcc|g\+\+|clang|go|cargo|rustc|java|javac|python|python3|ruby|perl|php|lua|sqlite3|psql|mysql|redis-cli|jq|yq|base64|md5sum|sha1sum|sha256sum|openssl|gpg|ssh-keygen|diff|patch|comm|sort|uniq|wc|tee|xargs|cut|tr|rev|paste|split|cksum|stat|file|readlink|realpath|dirname|basename|date|cal|uptime|time|timedatectl|hostname|uname|df|du|free|top|htop|ps|pgrep|pkill|kill|killall|nohup|sleep|watch|at|crontab|service|systemctl|journalctl|termux-\w+)\b/.test(first);
 
   return known;
 }
-
-function findNew(){
-  const r = [];
-  const now = Date.now();
-  document.querySelectorAll('pre').forEach(pre => {
-    if (pre.closest('#mdsb-panel')) return;
-    const codeEl = pre.querySelector('code');
-    const el = codeEl || pre;
-    const t = (el.textContent || '').trim();
-    if (!t || !isCmd(codeEl, t)) return;
-    if (!isCompleteShell(t)) { console.log('[mdsb] findNew: shell incompleto, skip'); return; }
-
-    // Si ya lo vimos recientemente (persistido), no decorarlo de nuevo
-    const h = hashStr(t);
-    const seen = seenCmds[h] && (now - seenCmds[h] < SEEN_TTL_MS);
-    console.log('[mdsb] findNew: hash=' + h + ' seen=' + !!seen + ' cmd=' + t.slice(0,50));
-    if (seen){
-      // Pero asegurarse de que ya tiene botón, si no, decorarlo sin ejecutar
-      let hasBtn = false;
-      let sib = el.nextElementSibling;
-      while (sib && sib.classList){
-        if (sib.classList.contains('mdsb-run-btn') && !sib.classList.contains('mdsb-cancel-btn')){
-          hasBtn = true;
-          break;
-        }
-        sib = sib.nextElementSibling;
-      }
-      if (!hasBtn){
-        r.push({ el, cmd: t, already: true });
-      }
-      return;
-    }
-
-    seenCmds[h] = now;
-    r.push({ el, cmd: t, already: false });
-  });
-  return r;
-}
-
-function decorate(el, cmd){
-  // NUEVO: no decorar reportes previos
-  if (/\[AGENT REPORT\]|cmd_sha256:|^\s*cmd\s*:|^\s*status\s*:/m.test(cmd)) {
-    console.log('[mdsb] decorate: SKIP reporte detectado');
-    return null;
-  }
-  console.log('[mdsb] decorate: cmd=' + cmd.slice(0, 60) + ' hash=' + hashStr(cmd));
-  // Eliminar botones previos
-  let sib = el.nextElementSibling;
-  while (sib && sib.classList && sib.classList.contains('mdsb-run-btn')){
-    const s = sib; sib = sib.nextElementSibling; s.remove();
-  }
-  const b = document.createElement('button');
-  b.className = 'mdsb-run-btn';
-  b.textContent = '> Ejecutar';
-  // CLAVE: guardar cmd en el dataset del botón, no en closure
-  b.dataset.cmd = cmd;
-  b.dataset.hash = hashStr(cmd);
-  b.onclick = () => {
-    // Leer cmd FRESCO del dataset (por si el closure quedó viejo)
-    const freshCmd = b.dataset.cmd;
-    runBlock(b, freshCmd, { autoPaste: mode !== 'off', autoSend: mode === 'auto', force: true });
-  };
-  el.parentNode.insertBefore(b, el.nextSibling);
-  return b;
-}
-
-async function runBlock(btn, cmd, opts){
-  opts = opts || {};
-  btn.disabled = true;
-  btn.classList.remove('done','error');
-  btn.textContent = '⏳ Ejecutando...';
-
-  let cancelBtn = btn.nextElementSibling;
-  const needsCancel = !(cancelBtn && cancelBtn.classList && cancelBtn.classList.contains('mdsb-cancel-btn'));
-  if (needsCancel){
-    cancelBtn = document.createElement('button');
-    cancelBtn.className = 'mdsb-run-btn mdsb-cancel-btn';
-    cancelBtn.textContent = 'X';
-    cancelBtn.title = 'Cancelar';
-    btn.parentNode.insertBefore(cancelBtn, btn.nextSibling);
-  }
-  cancelBtn.style.display = 'inline-flex';
-  cancelBtn.onclick = () => {
-    btn.textContent = 'X Cancelado';
-    btn.classList.add('error');
-    cancelBtn.style.display = 'none';
-    btn.disabled = false;
-  };
-
-  try {
-    const r = await execViaMCP(cmd, { force: opts.force });
-    cancelBtn.style.display = 'none';
-
-    if (r.cached){
-      btn.textContent = 'OK (cache)';
-      btn.classList.add('done');
-    } else if (r.exitCode === 0){
-      btn.textContent = 'OK Listo';
-      btn.classList.add('done');
-    } else {
-      btn.textContent = 'X exit ' + r.exitCode;
-      btn.classList.add('error');
-    }
-    logPanel('<b>&gt;</b> ' + cmd.slice(0,80).replace(/</g,'&lt;') + ' <i>(' + (r.ms||0) + 'ms)</i>');
-
-    if (opts.autoPaste){
-      const report = formatAgentReport(cmd, r);
-      if (!setTextarea(report)){
-        showToast('No encontre el input para pegar');
-      } else if (opts.autoSend){
-        // Reintenta enviar durante 10s hasta que DeepSeek termine de escribir
-        setTimeout(async () => {
-          const s = await clickSend();
-          if (!s.ok) showToast('No pude enviar: ' + s.reason);
-          else log('enviado via ' + s.via);
-        }, 800);
-      } else {
-        showToast('Semi: reporte pegado, revisalo y envia');
-      }
-    }
-    btn.disabled = false;
-    btn.title = 'Reintentar (forzar, ignora cache)';
-    btn.onclick = () => runBlock(btn, cmd, Object.assign({}, opts, { force:true }));
-    return r;
-  } catch(e){
-    cancelBtn.style.display = 'none';
-    btn.textContent = 'X ' + (e.message || 'error').slice(0,30);
-    btn.classList.add('error');
-    btn.disabled = false;
-    btn.title = 'Reintentar';
-    btn.onclick = () => runBlock(btn, cmd, opts);
-    showToast('Error: ' + e.message);
-    return { error: e };
-  }
-}
-
-let busy = false;
-async function runAuto(){
-  console.log('[mdsb] runAuto: mode=' + mode + ', busy=' + busy);
-  if (mode === 'off' || busy) return;
-
-  // Buscar bloques decorados con botón "> Ejecutar" sin ejecutar
-  const blocks = [];
-  document.querySelectorAll('pre').forEach(pre => {
-    if (pre.closest('#mdsb-panel')) return;
-    const codeEl = pre.querySelector('code');
-    const el = codeEl || pre;
-    const t = (el.textContent || '').trim();
-    if (!t || !isCmd(codeEl, t)) return;
-    if (!isCompleteShell(t)) return;
-
-    let sib = el.nextElementSibling;
-    while (sib && sib.classList){
-      if (sib.classList.contains('mdsb-run-btn') && !sib.classList.contains('mdsb-cancel-btn')){
-        const isAlready = sib.classList.contains('mdsb-already');
-        if (!sib.disabled &&
-            !sib.classList.contains('done') &&
-            !sib.classList.contains('error') &&
-            !isAlready &&
-            sib.textContent.indexOf('Ejecutar') !== -1){
-          blocks.push({ el: el, cmd: t, btn: sib });
-        }
-        break;
-      }
-      sib = sib.nextElementSibling;
-    }
-  });
-
-  console.log('[mdsb] runAuto: ' + blocks.length + ' bloques ejecutables');
-  blocks.forEach(b => console.log('[mdsb]   → ' + b.cmd.slice(0,60) + ' (btn clases: ' + b.btn.className + ')'));
-  if (!blocks.length) return;
-
-  busy = true;
-  try {
-    for (const item of blocks){
-      if (mode === 'off') break;
-      if (item.btn.disabled) continue;
-      const autoSend = (mode === 'auto');
-      console.log('[mdsb] auto ejecutando (' + mode + '): ' + item.cmd.slice(0, 60));
-      await runBlock(item.btn, item.cmd, { autoPaste: true, autoSend: autoSend });
-      await new Promise(r => setTimeout(r, COALESCE_MS));
-    }
-  } finally {
-    busy = false;
-    if (mode !== 'off') setTimeout(runAuto, 1500);
-  }
-}
-
-let moTimer = null;
-let streamQuietTimer = null;
-const mo = new MutationObserver(() => {
-  clearTimeout(moTimer);
-  moTimer = setTimeout(() => {
-    // Detecta si aún se está escribiendo: si hubo cambios en los últimos 800ms, esperar
-    clearTimeout(streamQuietTimer);
-    streamQuietTimer = setTimeout(() => {
-      try {
-        const nuevos = findNew();
-        console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos (quiet)');
-        nuevos.forEach(item => {
-          const b = decorate(item.el, item.cmd);
-          if (!b) return;  // filtrado (reporte o incompleto)
-          if (item.already){
-            b.classList.add('mdsb-already');
-            b.title = 'Ya visto (clic para forzar ejecución)';
-          }
-        });
-        saveSeen();
-        if (mode !== 'off') runAuto();
-      } catch(e){ warn('observer', e); }
-    }, 2500);
-  }, 200);
-});
-
-function boot(){
-  if (!document.body){ setTimeout(boot, 100); return; }
-  mo.observe(document.body, { childList:true, subtree:true });
-  loadSeen();
-  loadMode();
-  ensureFab();
-  log('listo');
-}
-
-boot();
