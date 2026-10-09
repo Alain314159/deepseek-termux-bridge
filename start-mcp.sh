@@ -4,6 +4,8 @@ set +e
 export TERMUX_NATIVE_MCP_ORIGIN="https://chat.deepseek.com"
 export TERMUX_NATIVE_MCP_PORT="8081"
 export TERMUX_NATIVE_MCP_HOST="127.0.0.1"
+export TERMUX_MCP_TIMEOUT="120"   # timeout de 120s por comando
+mkdir -p ~/tmp 2>/dev/null      # /tmp no existe en Termux
 
 echo "Deteniendo instancias previas..."
 pkill -9 -f termux-native-mcp 2>/dev/null

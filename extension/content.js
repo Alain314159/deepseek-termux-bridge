@@ -173,13 +173,18 @@ function normalizeOut(text){
 }
 
 function formatAgentReport(cmd, res){
-  const status = res.exitCode === 0 ? 'OK' : 'FAIL';
+  const status = res.exitCode === 0 ? 'OK' : 'EXIT_' + res.exitCode;
   const out = normalizeOut((res.stdout || '') +
     (res.stderr ? '\n[stderr]\n' + res.stderr : ''));
-  const firstLine = cmd.split('\n')[0].slice(0,80);
-  return '```plaintext\n[AGENT REPORT]\ncmd: ' + firstLine +
-         '\nstatus: ' + status + '\nexit: ' + res.exitCode + '\nms: ' + (res.ms||0) +
-         '\n---\n' + out.trim() + '\n```';
+  const firstLine = cmd.split('\n')[0].slice(0, 120);
+  const cmdHash = hashStr(cmd);
+  return '```plaintext\n[AGENT REPORT]\n' +
+         'cmd_sha256: ' + cmdHash + '\n' +
+         'cmd: ' + firstLine + '\n' +
+         'status: ' + status + '\n' +
+         'exit: ' + res.exitCode + '\n' +
+         'ms: ' + (res.ms || 0) + '\n' +
+         '---\n' + out.trim() + '\n```';
 }
 
 function ensurePanel(){
@@ -477,6 +482,9 @@ function isCmd(codeEl, txt){
   // 5) Aceptar si tiene estructura shell (&&, ||, |, ;, >, <, $(), backticks)
   if (/(?:&&|\|\||\||;|>|<|\$\(|`)/.test(txt)) return true;
 
+  // 5b) VAR=val al inicio (ej: FOO=bar echo $FOO)
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return true;
+
   // 6) Lista ampliada de comandos conocidos (incluye control, sistema, dev)
   const known = /^(?:git|npm|node|npx|pnpm|yarn|bun|ls|cd|cat|echo|printf|mkdir|rmdir|rm|cp|mv|ln|touch|chmod|chown|chgrp|pwd|head|tail|sed|awk|grep|egrep|fgrep|find|locate|which|whereis|type|whoami|id|groups|env|export|unset|set|source|alias|unalias|history|help|man|info|sudo|su|apt|apt-get|pkg|dpkg|pip|pip3|pipx|curl|wget|tar|zip|unzip|gzip|gunzip|xz|bzip2|ssh|scp|rsync|git|docker|podman|make|cmake|gcc|g\+\+|clang|go|cargo|rustc|java|javac|python|python3|node|ruby|perl|php|lua|sqlite3|psql|mysql|redis-cli|jq|yq|base64|md5sum|sha1sum|sha256sum|openssl|gpg|ssh-keygen|diff|patch|comm|sort|uniq|wc|tee|xargs|cut|tr|rev|paste|split|cksum|stat|file|readlink|realpath|dirname|basename|date|cal|uptime|time|timedatectl|hostname|uname|df|du|free|top|htop|ps|pgrep|pkill|kill|killall|nohup|sleep|watch|at|crontab|service|systemctl|journalctl|xargs|for|while|until|if|case|elif|else|fi|done|do|then|function|termux-\w+)\b/.test(first);
 
@@ -520,6 +528,8 @@ function findNew(){
 }
 
 function decorate(el, cmd){
+  console.log('[mdsb] decorate: cmd=' + cmd.slice(0, 60) + ' hash=' + hashStr(cmd));
+  // Eliminar botones previos
   let sib = el.nextElementSibling;
   while (sib && sib.classList && sib.classList.contains('mdsb-run-btn')){
     const s = sib; sib = sib.nextElementSibling; s.remove();
@@ -527,7 +537,14 @@ function decorate(el, cmd){
   const b = document.createElement('button');
   b.className = 'mdsb-run-btn';
   b.textContent = '> Ejecutar';
-  b.onclick = () => runBlock(b, cmd, { autoPaste: mode !== 'off', autoSend: mode === 'auto', force: true });
+  // CLAVE: guardar cmd en el dataset del botón, no en closure
+  b.dataset.cmd = cmd;
+  b.dataset.hash = hashStr(cmd);
+  b.onclick = () => {
+    // Leer cmd FRESCO del dataset (por si el closure quedó viejo)
+    const freshCmd = b.dataset.cmd;
+    runBlock(b, freshCmd, { autoPaste: mode !== 'off', autoSend: mode === 'auto', force: true });
+  };
   el.parentNode.insertBefore(b, el.nextSibling);
   return b;
 }
