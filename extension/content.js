@@ -559,6 +559,7 @@ function isCmd(codeEl, txt){
     break;
   }
   if (!first) return false;
+  if (/^(?:if|for|while|def|class|import|from|return|const|let|var|function|async|await|try|catch|switch|case|break|continue|new |this\.|public |private |protected |static |void |int |String |boolean |elif|else|fi|done|then|do)\b/.test(first)) return false;
 
   // 4) Rechazar si parece JS/HTML/JSON
   if (/^(?:const|let|var|function|import|export|class|return|new |<\?|<!|[{[]|\/[a-z])/.test(first)) return false;
