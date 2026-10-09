@@ -176,7 +176,7 @@ function formatAgentReport(cmd, res){
   const status = res.exitCode === 0 ? 'OK' : 'EXIT_' + res.exitCode;
   const out = normalizeOut((res.stdout || '') +
     (res.stderr ? '\n[stderr]\n' + res.stderr : ''));
-  const firstLine = cmd.split('\n')[0].slice(0, 120);
+  const firstLine = cmd.split('\n')[0].slice(0, 200);
   const cmdHash = hashStr(cmd);
   return '```plaintext\n[AGENT REPORT]\n' +
          'cmd_sha256: ' + cmdHash + '\n' +
@@ -453,9 +453,63 @@ function showToast(msg, ms){
   el._t = setTimeout(()=>{ el.style.display='none'; }, ms);
 }
 
+
+// Valida que un bloque shell esté completo (no capturado a medio streaming)
+function isCompleteShell(txt){
+  if (!txt) return false;
+  // Heredocs: cada <<'X' o <<X debe tener su cierre X al final de una línea
+  const heredocs = [...txt.matchAll(/<<[-]?['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/g)];
+  for (const m of heredocs){
+    const delim = m[1];
+    const re = new RegExp('^' + delim + '\\s*$', 'm');
+    if (!re.test(txt.slice(m.index + m[0].length))) return false;
+  }
+  // Comillas balanceadas (simple, ignora escapes)
+  let singles = 0, doubles = 0, backticks = 0;
+  for (let i = 0; i < txt.length; i++){
+    const c = txt[i];
+    if (c === '\\') { i++; continue; }
+    if (c === "'" && !doubles) singles ^= 1;
+    else if (c === '"' && !singles) doubles ^= 1;
+    else if (c === '`') backticks ^= 1;
+  }
+  if (singles || doubles || backticks) return false;
+  // Paréntesis balanceados (solo cuentan si no están en comillas... simplificado)
+  let parens = 0, brackets = 0, braces = 0;
+  for (let i = 0; i < txt.length; i++){
+    const c = txt[i];
+    if (c === '(') parens++;
+    else if (c === ')') parens--;
+    else if (c === '[') brackets++;
+    else if (c === ']') brackets--;
+    else if (c === '{') braces++;
+    else if (c === '}') braces--;
+    if (parens < 0 || brackets < 0 || braces < 0) return false;
+  }
+  if (parens || brackets || braces) return false;
+  // Si termina en && || | \ → probablemente incompleto
+  if (/[&|\\]\s*$/.test(txt)) return false;
+  return true;
+}
+
 function isCmd(codeEl, txt){
   txt = (txt || '').trim();
   if (!txt || txt.length > 8000) return false;
+
+  if (/\[AGENT REPORT\]/.test(txt)) return false;
+  if (/^\s*cmd_sha256\s*:/m.test(txt)) return false;
+  if (/^\s*status\s*:\s*(OK|EXIT_)/m.test(txt)) return false;
+  if (/^\s*exit\s*:\s*\d+/m.test(txt)) return false;
+  if (/^\s*ms\s*:\s*\d+/m.test(txt)) return false;
+  const clsCheck = ((codeEl && codeEl.className) || '').toString().toLowerCase();
+  if (/language-(plaintext|text|markdown|md|log|output)\b/.test(clsCheck)) return false;
+
+  // NUEVO: rechazar cualquier cosa que parezca un reporte o prosa técnica
+  if (/\[AGENT REPORT\]/.test(txt)) return false;
+  if (/^\s*cmd_sha256\s*:/m.test(txt)) return false;
+  if (/^\s*cmd\s*:\s/m.test(txt)) return false;
+  if (/^\s*status\s*:\s*(OK|EXIT_)/m.test(txt)) return false;
+  if (/^\s*exit\s*:\s*\d+/m.test(txt)) return false;
 
   // 1) Si el <code> tiene language-sh/bash/shell → aceptar siempre
   const cls = ((codeEl && codeEl.className) || '').toString().toLowerCase();
@@ -496,9 +550,11 @@ function findNew(){
   const now = Date.now();
   document.querySelectorAll('pre').forEach(pre => {
     if (pre.closest('#mdsb-panel')) return;
-    const el = pre.querySelector('code') || pre;
+    const codeEl = pre.querySelector('code');
+    const el = codeEl || pre;
     const t = (el.textContent || '').trim();
-    if (!t || !isCmd(el, t)) return;
+    if (!t || !isCmd(codeEl, t)) return;
+    if (!isCompleteShell(t)) { console.log('[mdsb] findNew: shell incompleto, skip'); return; }
 
     // Si ya lo vimos recientemente (persistido), no decorarlo de nuevo
     const h = hashStr(t);
@@ -528,6 +584,11 @@ function findNew(){
 }
 
 function decorate(el, cmd){
+  // NUEVO: no decorar reportes previos
+  if (/\[AGENT REPORT\]|cmd_sha256:|^\s*cmd\s*:|^\s*status\s*:/m.test(cmd)) {
+    console.log('[mdsb] decorate: SKIP reporte detectado');
+    return null;
+  }
   console.log('[mdsb] decorate: cmd=' + cmd.slice(0, 60) + ' hash=' + hashStr(cmd));
   // Eliminar botones previos
   let sib = el.nextElementSibling;
@@ -632,6 +693,7 @@ async function runAuto(){
     const el = codeEl || pre;
     const t = (el.textContent || '').trim();
     if (!t || !isCmd(codeEl, t)) return;
+    if (!isCompleteShell(t)) return;
 
     let sib = el.nextElementSibling;
     while (sib && sib.classList){
@@ -683,6 +745,7 @@ const mo = new MutationObserver(() => {
         console.log('[mdsb] observer: ' + nuevos.length + ' bloques nuevos (quiet)');
         nuevos.forEach(item => {
           const b = decorate(item.el, item.cmd);
+          if (!b) return;  // filtrado (reporte o incompleto)
           if (item.already){
             b.classList.add('mdsb-already');
             b.title = 'Ya visto (clic para forzar ejecución)';
@@ -691,7 +754,7 @@ const mo = new MutationObserver(() => {
         saveSeen();
         if (mode !== 'off') runAuto();
       } catch(e){ warn('observer', e); }
-    }, 800);
+    }, 2500);
   }, 200);
 });
 
