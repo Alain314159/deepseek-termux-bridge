@@ -82,7 +82,7 @@ function isSessionError(e) {
 async function mcpCallOnce(tool, args, opts) {
   const id = nextId++;
   const controller = new AbortController();
-  const timeoutMs = opts.timeoutMs || 120000;
+  const timeoutMs = (args && args.timeout) ? (args.timeout * 1000 + 10000) : (opts.timeoutMs || 620000);
   const t = setTimeout(() => controller.abort(), timeoutMs);
   let r;
   try {

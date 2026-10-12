@@ -5,7 +5,7 @@
   const CONFIG = {
     NONCE: 'TB-b01b4880261e8fdb',
     DEBOUNCE_MS: 3000,
-    REMINDER_EVERY: 10,
+    REMINDER_EVERY: 5,
     ENABLED_TOOLS: new Set([
       'run','system_info','health','process_list','process_kill','ls','read','write','mkdir',
       'delete','search','battery','location','wifi_info','screenshot','camera_photo','notify',
@@ -23,7 +23,7 @@
     CONFIRM_REQUIRED: new Set(['restore']),
     SMART_CONFIRM: new Set(['tx_rollback']),
     MAX_OUT_LEN: 8000,
-    RUN_TIMEOUT_MS: 120000,
+    RUN_TIMEOUT_MS: 600000,
     CONT_UMBRAL_IDLE: 300000,
     CONT_UMBRAL_TOOLCALL: 600000,
     CONT_UMBRAL_DONE: 900000,
@@ -88,12 +88,33 @@
     "Toma la decision mas razonable y ejecutala. Si la tarea esta terminada, respondi DONE " +
     "seguido del token de 6 caracteres que aparece en el [HB:] (ejemplo: DONE a3f8b2).";
 
-  const REMINDER_PROMPT =
-    "[RECORDATORIO] Recordá que para ejecutar comandos tenés que responder " +
-    "con un bloque JSON con tool_call. Campos obligatorios: nonce (" + CONFIG.NONCE + "), " +
-    "id único (call_N), name (por defecto run), y arguments.command con el comando. " +
-    "Lista completa de herramientas en /data/data/com.termux/files/home/deepseek-termux-bridge-v2/TOOLS.md. " +
-    "Analizá exit y cwd antes de continuar.";
+  const REMINDER_POOL = [
+    "[RECORDATORIO] Formato del tool_call: bloque JSON con nonce (" + CONFIG.NONCE + "), id unico (call_N), name, y arguments. Ej: {\"tool_call\":{\"nonce\":\"...\",\"id\":\"call_N\",\"name\":\"run\",\"arguments\":{\"cmd\":\"...\"}}}.",
+    "[RECORDATORIO] Lista completa de herramientas en /data/data/com.termux/files/home/deepseek-termux-bridge-v2/TOOLS.md. Leela si dudas sobre que tool usar.",
+    "[RECORDATORIO] Usa file_edit en vez de write para cambios puntuales en archivos existentes. Guarda snapshot y devuelve diff.",
+    "[RECORDATORIO] Si un comando tarda mas de 60s, usa session_run + session_poll en vez de run bloqueante.",
+    "[RECORDATORIO] Antes de un comando destructivo, considera sandbox_run para probar en copia descartable.",
+    "[RECORDATORIO] Si la tarea toca varios archivos, envuelvela con tx_begin y tx_commit. Si falla, tx_rollback.",
+    "[RECORDATORIO] Usa project_profile + project_run para detectar y correr un proyecto sin armar comandos a mano.",
+    "[RECORDATORIO] Analiza siempre exit y cwd del ultimo [MCP RESULT] antes de continuar."
+  ];
+
+  function getSystemReinject() {
+    return '[SYSTEM REINJECT] Recordatorio completo de reglas:\n' +
+      '1. Para ejecutar comandos emite un bloque JSON con tool_call.\n' +
+      '2. Nonce: ' + CONFIG.NONCE + '\n' +
+      '3. Tenes 84 herramientas top-level + 87 smart tools. Detalle en TOOLS.md.\n' +
+      '4. Usa smart con {tool:"file_edit", params:{path, find, replace}} para editar sin heredocs.\n' +
+      '5. Para builds largos usa session_run + session_poll.\n' +
+      '6. Para editar varios archivos con rollback: tx_begin + tx_commit / tx_rollback.\n' +
+      '7. Si terminas en modo CONT, escribi DONE <token> tres veces.\n' +
+      '8. Analiza exit y cwd de cada [MCP RESULT] antes de continuar.';
+  }
+
+  function getReminder(count) {
+    const idx = Math.floor(count / CONFIG.REMINDER_EVERY) % REMINDER_POOL.length;
+    return REMINDER_POOL[idx];
+  }
 
   const state = {
     executed: new Set(JSON.parse(localStorage.getItem('tb_executed') || '[]')),
@@ -113,6 +134,7 @@
     mode: (localStorage.getItem('tb_mode') || 'semi'),
     offButtons: new Set(),
     contActive: false,
+    contOffline: false,
     contToken: null,
     contHb: 0,
     contLastActivity: 0,
@@ -509,10 +531,11 @@
   function execViaBackground(cmd, toolName, args) {
     return new Promise((resolve) => {
       let done = false;
+      const customTimeout = (args && args.timeout) ? (args.timeout * 1000) : CONFIG.RUN_TIMEOUT_MS;
       const timer = setTimeout(() => {
         if (done) return; done = true;
         resolve({ exit_code: -1, stdout: '', stderr: 'timeout', cwd: '' });
-      }, CONFIG.RUN_TIMEOUT_MS);
+      }, customTimeout);
       try {
         chrome.runtime.sendMessage({ type: 'MCP_EXEC', cmd, toolName, args }, (resp) => {
           if (done) return; done = true; clearTimeout(timer);
@@ -640,26 +663,65 @@
     s += '---\n';
     if (out) s += out + (out.endsWith('\n') ? '' : '\n');
     if (err) s += '[stderr]\n' + err;
-    if (appendReminder) s += '\n' + REMINDER_PROMPT;
+    if (appendReminder) s += '\n' + getReminder(state.assistantCount);
+    if (state.assistantCount > 0 && state.assistantCount % 20 === 0) s += '\n\n' + getSystemReinject();
     return s;
+  }
+
+  const resultQueue = [];
+  let queueTimer = null;
+  let queueWorkerRunning = false;
+
+  function queueResult(text) {
+    resultQueue.push(text);
+    log('Encolado (' + resultQueue.length + ' en cola)');
+    if (queueTimer) clearTimeout(queueTimer);
+    queueTimer = setTimeout(flushQueue, 500);
+  }
+
+  async function flushQueue() {
+    queueTimer = null;
+    if (queueWorkerRunning) return;
+    if (resultQueue.length === 0) return;
+    queueWorkerRunning = true;
+    try {
+      while (resultQueue.length > 0) {
+        const ta = findChatTextarea();
+        if (!ta) { await new Promise(r => setTimeout(r, 1000)); continue; }
+        if (ta.value.trim()) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        const batch = resultQueue.splice(0, resultQueue.length);
+        const text = batch.join('\n\n');
+        if (!setTextarea(text)) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        log('Pegado batch de ' + batch.length + ' resultados');
+        if (state.mode === 'auto' || state.mode === 'cont') {
+          await new Promise(r => setTimeout(r, 500));
+          const ok = await clickSend();
+          if (!ok) log('No pude enviar batch', 'warn');
+        } else {
+          log('Pegado sin enviar (modo ' + state.mode + ')');
+        }
+      }
+    } finally {
+      queueWorkerRunning = false;
+    }
   }
 
   async function sendResult(id, r, appendReminder, autoSend) {
     const text = formatResult(id, r, appendReminder);
-    for (let i = 0; i < 20; i++) {
+    if (!autoSend) {
       const ta = findChatTextarea();
-      if (ta && !ta.value.trim()) {
-        if (setTextarea(text)) {
-          if (!autoSend) { log('Pegado (sin enviar) ' + id); return; }
-          await new Promise(res => setTimeout(res, 500));
-          const ok = await clickSend();
-          if (!ok) log('No pude enviar ' + id, 'warn');
-          return;
-        }
+      if (ta && !ta.value.trim() && setTextarea(text)) {
+        log('Pegado sin enviar ' + id);
+        return;
       }
-      await new Promise(res => setTimeout(res, 500));
     }
-    log('Textarea ocupado, no pegué ' + id, 'warn');
+    queueResult(text);
   }
 
 
@@ -742,8 +804,18 @@
   }
 
   function contFindResendBtn() {
-    const cands = document.querySelectorAll('[aria-label*="Resend" i], [aria-label*="Reintentar" i], [aria-label*="Retry" i], [aria-label*="Send again" i]');
+    // 1. Por aria-label (casos conocidos)
+    const sels = '[aria-label*="Resend" i], [aria-label*="Reintentar" i], [aria-label*="Retry" i], [aria-label*="Send again" i], [aria-label*="Enviar de nuevo" i]';
+    const cands = document.querySelectorAll(sels);
     for (const b of cands) if (b.offsetParent !== null && !b.disabled) return b;
+    // 2. Por texto visible (caso "Check network and retry")
+    const allButtons = document.querySelectorAll('button, [role="button"]');
+    for (const b of allButtons) {
+      if (b.offsetParent === null || b.disabled) continue;
+      const t = (b.textContent || '').toLowerCase().trim();
+      if (!t || t.length > 60) continue;
+      if (/check\s*network|retry|reintentar|reconnect|reconect|network\s*error|volver\s*a\s*intentar|try\s*again/i.test(t)) return b;
+    }
     return null;
   }
 
@@ -811,6 +883,21 @@
 
   function contTick() {
     if (!state.contActive) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      if (!state.contOffline) {
+        state.contOffline = true;
+        contLog('sin red, watchdog pausado');
+        toast('Sin red: watchdog pausado');
+      }
+      state.contLastActivity = Date.now();
+      return;
+    }
+    if (state.contOffline) {
+      state.contOffline = false;
+      contLog('red recuperada, watchdog reanudado');
+      toast('Red recuperada: watchdog reanudado');
+      state.contLastActivity = Date.now();
+    }
     contPersist();
     if (contUserTyped()) { contStop('usuario escribio'); return; }
     if (contDetectDoneSignal()) {
