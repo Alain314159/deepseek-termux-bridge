@@ -4,3 +4,14 @@ __pycache__/
 *.pyc
 node_modules/
 .DS_Store
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.apk
+*.ap_
+*.dex
+*.class
+nebula/app/build/
+nebula/build/
