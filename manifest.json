@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek Termux Bridge",
+  "version": "2.0.0",
+  "description": "Puente entre chat.deepseek.com y Termux via MCP nativo (127.0.0.1:8081). Detección por tool_call JSON con nonce.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "alarms"],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "http://127.0.0.1:8081/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_title": "DeepSeek Termux Bridge" },
+  "background": { "service_worker": "background.js" },
+  "web_accessible_resources": [
+    {
+      "resources": ["inject-main.js"],
+      "matches": ["https://chat.deepseek.com/*"]
+    }
+  ]
+}

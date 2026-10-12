@@ -1,60 +1,72 @@
-# DeepSeek Termux Bridge
+# DeepSeek Termux Bridge v2
 
-Puente entre chat.deepseek.com (web gratis, sin API) y Termux en Android.
+Puente entre chat.deepseek.com (gratis, sin API key) y Termux real en Android. La IA ejecuta comandos en un shell real, recibe los resultados, y continua trabajando de forma autonoma.
 
-## Como funciona
+## Que hace
 
-1. En el chat, DeepSeek propone comandos shell en bloques ```sh```.
-2. La extension detecta los bloques e inyecta un boton ▶ Ejecutar.
-3. Al tocar, hace fetch al servidor termux-native-mcp en http://127.0.0.1:8081/mcp
-4. El servidor ejecuta el comando en shell real de Termux.
-5. La respuesta se formatea como [AGENT REPORT] y se pega en el textarea.
-6. DeepSeek continua el ciclo.
+- Detecta bloques JSON `{"tool_call":...}` en las respuestas de DeepSeek.
+- Los ejecuta en Termux via MCP (127.0.0.1:8081).
+- Pega el resultado `[MCP RESULT]` en el chat.
+- Repite el ciclo.
 
-## Requisitos
+## Arquitectura
 
-- Termux con termux-mcp instalado (pip install termux-mcp)
-- termux-native-mcp corriendo en 127.0.0.1:8081
-- Chrome/Chromium en Android (probado con Titanium)
-- Extension cargada en modo desarrollador
+```
+chat.deepseek.com (HTTPS)
+  -> content.js detecta tool_call
+  -> background.js fetch a http://127.0.0.1:8081/mcp
+  -> termux-native-mcp ejecuta la tool en Termux
+  <- resultado en el chat como [MCP RESULT]
+```
 
-## Arrancar servidor
+## Modos
 
-    bash start-mcp.sh
+- **OFF** - no ejecuta nada. Boton manual por bloque.
+- **SEMI** - ejecuta y pega, no envia.
+- **AUTO** - ejecuta, pega y envia.
+- **CONT** - autonomo. Watchdog con heartbeats si la IA se queda quieta.
 
-O manual:
+## Herramientas
 
-    export TERMUX_NATIVE_MCP_ORIGIN="https://chat.deepseek.com"
-    nohup termux-native-mcp > ~/native-mcp.log 2>&1 &
+- 84 tools top-level (read, write, run, file_edit, session_*, terminal_*, git_pr, etc.).
+- 87 smart tools via `{"name":"smart","arguments":{"tool":"file_edit","params":{...}}}`.
+- Documentadas en `TOOLS.md`.
 
-## Cargar extension en Titanium
+## Archivos
 
-1. Abre titanium://extensions
-2. Activa Modo desarrollador
-3. Cargar descomprimida -> ~/storage/downloads/extension/
-4. Abre https://chat.deepseek.com
+- `content.js` - content script, logica de la UI, deteccion, ejecucion.
+- `background.js` - service worker, fetch al MCP.
+- `manifest.json` - MV3 manifest.
+- `inject-main.js` - observador de cambios de URL.
+- `TOOLS.md` - documentacion de las 171 herramientas.
+- `PLAN.md` - roadmap de mejoras pendientes.
+- `gen-tools-doc-v2.py` - regenera TOOLS.md desde el schema del server.
+- `start-mcp.sh`, `stop-mcp.sh`, `watchdog-mcp.sh` - arranque y supervision del server.
 
-## Uso
+## Instalacion
 
-- Boton flotante '>' abre panel. Arrastrable.
-- Panel: estado MCP, toggle Auto (autopilot), I (inyectar prompt), L (limpiar ledger).
-- Boton ▶ Ejecutar bajo cada bloque sh.
-- Autopilot ON: ejecuta y pega [AGENT REPORT] automaticamente.
+1. En Termux: `pkg install termux-api` y la app Termux:API.
+2. `pip install -e ~/termux-mcp` para el server MCP.
+3. `pip install -e ~/termux-mcp` apuntando al repo donde vive termux-mcp.
+4. Arrancar el server con `~/deepseek-termux-bridge/start-mcp.sh`.
+5. En Titanium, cargar la carpeta `/sdcard/Download/deepseek-termux-bridge-v2/` como extension descomprimida.
 
-## Herramientas MCP destacadas
+## Modo CONT
 
-- run - ejecuta comando shell
-- run_digest - resumen compacto
-- git_pr - operaciones PR de GitHub
-- session_run / session_poll - comandos largos
-- terminal_open - PTY real visible
+En modo CONT, la extension vigila si la IA deja de responder. Si pasan 5 minutos sin actividad, le envia un heartbeat con un token unico. La IA debe responder con un tool_call o, si termino, escribir `DONE <token>` tres veces seguidas.
 
-## Limitaciones
+## Estado
 
-- node requiere confirmed:true o terminal real (necesita tty)
-- Comandos riesgosos (rm -rf) bloqueados o requieren confirmacion
-- El servidor MCP debe estar corriendo
+- v2 en desarrollo activo.
+- v1 archivada.
 
-## Licencia
+## Repositorio
 
-MIT
+https://github.com/Alain314159/deepseek-termux-bridge
+
+## Entorno
+
+- Android con Termux.
+- Python 3.14.
+- Titanium (Chromium con extensiones MV3).
+- Todo se gestiona desde el telefono.
